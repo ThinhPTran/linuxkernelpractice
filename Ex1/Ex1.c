@@ -3,6 +3,7 @@
 #include <linux/device.h> // library for creating a device file.
 #include <linux/slab.h> // library for kmalloc and kfree
 #include <linux/cdev.h> // library to work with cdev
+#include <linux/uaccess.h> // library to exchange data between user space and kernel space
 #include "vchar_driver.h" 
 
 
@@ -35,11 +36,120 @@ static int vchar_driver_release(struct inode * inode, struct file * filp) {
   return 0; 
 }
 
+int vchar_hw_read_data(vchar_dev_t *hw, int start_reg, int num_regs, char*kbuf)
+{
+  int read_bytes = num_regs;
+
+  // Check whether we have access right 
+  if ((hw->control_regs[CONTROL_ACCESS_REG] & CTRL_READ_DATA_BIT ) == DISABLE)
+    return -1; 
+
+  // Check if the address of kernel buffer is legal.
+  if (kbuf == NULL) 
+    return -1; 
+
+  // Check if the position of register is approriate
+  if (start_reg > NUM_DEV_REGS) {
+    return -1; 
+  }
+
+  // Change num_regs to an appropriate number
+  if (num_regs > (NUM_DATA_REGS - start_reg))
+    read_bytes = NUM_DATA_REGS - start_reg; 
+
+  memcpy(kbuf, hw->data_regs + start_reg, read_bytes); 
+
+  hw->status_regs[READ_COUNT_L_REG] += 1; 
+  if (hw->status_regs[READ_COUNT_L_REG] == 0)
+    hw->status_regs[READ_COUNT_H_REG] += 1; 
+
+  return read_bytes;
+}
+
+static ssize_t vchar_driver_read(struct file *filp, char __user *user_buf, size_t len, loff_t *off)
+{
+  char * kernel_buf = NULL; 
+  int num_bytes = 0; 
+
+  printk("Handle read event start from %lld, %zu bytest\n", *off, len); 
+  kernel_buf = kzalloc(len, GFP_KERNEL); 
+
+  if (kernel_buf == NULL)
+    return 0; 
+
+  num_bytes = vchar_hw_read_data(cdrv.vchar_hw, *off, len, kernel_buf); 
+  printk("read %d bytes from HW\n", num_bytes); 
+
+  if (num_bytes < 0)
+    return -EFAULT; 
+
+  if (copy_to_user(user_buf, kernel_buf, num_bytes)) 
+    return -EFAULT; 
+
+  *off += num_bytes; 
+
+  return num_bytes;
+}
+
+
+int vchar_hw_write_data(vchar_dev_t *hw, int start_reg, int num_regs, char* kbuf)
+{
+  int write_bytes = num_regs; 
+
+  if ((hw->control_regs[CONTROL_ACCESS_REG] & CTRL_WRITE_DATA_BIT) == DISABLE)
+    return -1; 
+
+  if (kbuf == NULL)
+    return -1; 
+
+  if (start_reg > NUM_DATA_REGS)
+    return -1; 
+
+  if (num_regs > (NUM_DATA_REGS - start_reg)) {
+    write_bytes = NUM_DATA_REGS - start_reg; 
+    hw->status_regs[DEVICE_STATUS_REG] |= STS_DATAREGS_OVERFLOW_BIT; 
+  }
+
+  memcpy(hw->data_regs + start_reg, kbuf, write_bytes); 
+
+  hw->status_regs[WRITE_COUNT_L_REG] += 1; 
+  if (hw->status_regs[WRITE_COUNT_L_REG] == 0)
+    hw->status_regs[WRITE_COUNT_H_REG] += 1; 
+
+  return write_bytes; 
+}
+
+static ssize_t vchar_driver_write(struct file *filp, const char __user *user_buf, size_t len, loff_t *off)
+{
+  char * kernel_buf = NULL; 
+  int num_bytes = 0; 
+  printk("Handle write event start from %lld, %zu bytes\n", *off, len); 
+
+  kernel_buf = kzalloc(len, GFP_KERNEL);
+
+  if (copy_from_user(kernel_buf, user_buf, len))
+    return -EFAULT; 
+
+  num_bytes = vchar_hw_write_data(cdrv.vchar_hw, *off, len, kernel_buf); 
+  printk("writes %d bytes to HW\n", num_bytes); 
+
+  if (num_bytes < 0)
+    return -EFAULT; 
+
+  *off += num_bytes; 
+  return num_bytes; 
+}
+
+
+
+
 static struct file_operations fops = 
 {
-	.owner = THIS_MODULE,
-	.open  = vchar_driver_open,
+	.owner   = THIS_MODULE,
+	.open    = vchar_driver_open,
 	.release = vchar_driver_release,
+	.read    = vchar_driver_read, 
+	.write   = vchar_driver_write,
 }; 
 
 int vchar_hw_init(vchar_dev_t * hw)
