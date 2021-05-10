@@ -7,6 +7,7 @@
 
 
 #define DRIVER_AUTHOR "ThinhP.Tran trphthinh@gmail.com"
+#define DRIVER_VERSION "1.0"
 
 typedef struct vchar_dev {
   unsigned char * control_regs; 
@@ -24,7 +25,7 @@ unsigned int open_cnt;
 } cdrv; 
 
 static int vchar_driver_open(struct inode * inode, struct file * filp) {
-  vchar_drv.open_cnt++; 
+  cdrv.open_cnt++; 
   printk("Handle opened event (%d)\n", cdrv.open_cnt); 
   return 0; 
 }
@@ -119,6 +120,36 @@ static int __init my_init(void)
 	    return ret;  
 	  } else {
             printk("Initialize vchar driver successfully\n");
+
+	    // register entry points to kernel
+	    cdrv.vcdev = cdev_alloc(); 
+	    if (cdrv.vcdev == NULL) {
+              printk("failed to allocate cdev structure\n");
+              vchar_hw_exit(cdrv.vchar_hw); 
+	      kfree(cdrv.vchar_hw);    
+              device_destroy(cdrv.dev_class, cdrv.dev_num); 
+              class_destroy(cdrv.dev_class); 
+              unregister_chrdev_region(cdrv.dev_num, 1);
+	      return -1; 
+	    } else {
+              printk("allocate cdev structure successfully\n");
+	      cdev_init(cdrv.vcdev, &fops); 
+              ret = cdev_add(cdrv.vcdev, cdrv.dev_num, 1); 
+	      if (ret < 0) {
+                printk("failed to add a char device to the system\n");
+                vchar_hw_exit(cdrv.vchar_hw); 
+	        kfree(cdrv.vchar_hw);    
+                device_destroy(cdrv.dev_class, cdrv.dev_num); 
+                class_destroy(cdrv.dev_class); 
+                unregister_chrdev_region(cdrv.dev_num, 1);
+	        return ret; 	
+	      } else {
+                printk("Register entry points to kernel successfully\n"); 
+
+	      }
+	    }
+
+
 	  }
 	}
       }
@@ -134,10 +165,22 @@ static int __init my_init(void)
 
 static void __exit my_exit(void)
 {
-  vchar_hw_exit(cdrv.vchar_hw); 
+  // Remove entry points from kernel
+  cdev_del(cdrv.vcdev); 
+	  
+  // Release physical device	
+  vchar_hw_exit(cdrv.vchar_hw);
+  
+  // Release memory for physical device struct 
   kfree(cdrv.vchar_hw); 
+
+  // Destroy device
   device_destroy(cdrv.dev_class, cdrv.dev_num); 
+
+  // Destroy class
   class_destroy(cdrv.dev_class); 
+
+  // 
   unregister_chrdev_region(cdrv.dev_num, 1); 
   printk("Goodbye my first driver"); 
 }
