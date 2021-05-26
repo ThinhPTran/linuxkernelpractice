@@ -4,11 +4,26 @@
 #include <linux/slab.h> // library for kmalloc and kfree
 #include <linux/cdev.h> // library to work with cdev
 #include <linux/uaccess.h> // library to exchange data between user space and kernel space
+#include <linux/ioctl.h>  // library to serve ioctl
 #include "vchar_driver.h" 
 
 
 #define DRIVER_AUTHOR "ThinhP.Tran trphthinh@gmail.com"
-#define DRIVER_VERSION "1.0"
+#define DRIVER_VERSION "1.1"
+
+#define MAGICAL_NUMBER 243
+#define VCHAR_CLR_DATA_REGS _IO(MAGICAL_NUMBER, 0)
+#define VCHAR_GET_STS_REGS _IOR(MAGICAL_NUMBER, 1, sts_regs_t *)
+#define VCHAR_SET_RD_DATA_REGS _IOW(MAGICAL_NUMBER, 2, unsigned char *)
+#define VCHAR_SET_WR_DATA_REGS _IOW(MAGICAL_NUMBER, 3, unsigned char *)
+
+typedef struct {
+  unsigned char read_count_h_reg; 
+  unsigned char read_count_l_reg;
+  unsigned char write_count_h_reg; 
+  unsigned char write_count_l_reg; 
+  unsigned char device_status_reg; 
+} sts_regs_t; 
 
 typedef struct vchar_dev {
   unsigned char * control_regs; 
@@ -140,14 +155,92 @@ static ssize_t vchar_driver_write(struct file *filp, const char __user *user_buf
   return num_bytes; 
 }
 
-static struct file_operations fops = 
+// Function to clear all data - VCHAR_CLR_DATA_REGS
+int vchar_hw_clear_data(vchar_dev_t *hw) {
+  if ((hw->control_regs[CONTROL_ACCESS_REG] & CTRL_WRITE_DATA_BIT) == DISABLE)
+	  return -1; 
+
+  memset(hw->data_regs, 0, NUM_DATA_REGS * REG_SIZE); 
+  hw->status_regs[DEVICE_STATUS_REG] &= ~STS_DATAREGS_OVERFLOW_BIT; 
+
+  return 0; 
+}
+
+// Function to get all status register to user space - VCHAR_GET_STS_REGS
+void vchar_hw_get_status(vchar_dev_t *hw, sts_regs_t *status)
 {
-	.owner   = THIS_MODULE,
-	.open    = vchar_driver_open,
-	.release = vchar_driver_release,
-	.read    = vchar_driver_read, 
-	.write   = vchar_driver_write,
-}; 
+  memcpy(status, hw->status_regs, NUM_STS_REGS*REG_SIZE); 
+}
+
+// Function to allow reading to device's control register
+void vchar_hw_enable_read(vchar_dev_t *hw, unsigned char isEnable)
+{
+  if (isEnable == ENABLE) {
+    // allow to read
+    hw->control_regs[CONTROL_ACCESS_REG] |= CTRL_READ_DATA_BIT; 
+    hw->status_regs[DEVICE_STATUS_REG] |= STS_READ_ACCESS_BIT; 
+  } else {
+    hw->control_regs[CONTROL_ACCESS_REG] &= ~CTRL_READ_DATA_BIT; 
+    hw->status_regs[DEVICE_STATUS_REG] &= ~STS_READ_ACCESS_BIT; 
+  }
+}
+
+// Function to allow writing to device's control register
+void vchar_hw_enable_write(vchar_dev_t *hw, unsigned char isEnable)
+{
+  if (isEnable == ENABLE) {
+    // allow to write 
+    hw->control_regs[CONTROL_ACCESS_REG] |= CTRL_WRITE_DATA_BIT; 
+    hw->status_regs[DEVICE_STATUS_REG] |= STS_WRITE_ACCESS_BIT; 
+  } else {
+    hw->control_regs[CONTROL_ACCESS_REG] &= ~CTRL_WRITE_DATA_BIT; 
+    hw->status_regs[DEVICE_STATUS_REG] &= ~STS_WRITE_ACCESS_BIT; 
+  }
+}
+
+static long vchar_driver_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+  int ret = 0; 
+  printk("Handle ioctl event (cmd: %u)\n", cmd); 
+
+  switch(cmd) {
+    case VCHAR_CLR_DATA_REGS:
+      ret = vchar_hw_clear_data(cdrv.vchar_hw); 
+      if (ret < 0) {
+        printk("Can not clear data registers\n"); 
+      } else {
+        printk("Data registers have been cleared\n"); 
+      }
+      break;
+    case VCHAR_SET_RD_DATA_REGS:
+      {
+	unsigned char isReadEnable; 
+        copy_from_user(&isReadEnable, (unsigned char *) arg, sizeof(isReadEnable)); 
+        vchar_hw_enable_read(cdrv.vchar_hw, isReadEnable); 
+        printk("Data registers have been %s to read\n", (isReadEnable == ENABLE)?"enable":"disable"); 
+      }
+      break;
+    case VCHAR_SET_WR_DATA_REGS:
+      {
+      unsigned char isWriteEnable; 
+      copy_from_user(&isWriteEnable, (unsigned char *) arg, sizeof(isWriteEnable)); 
+      vchar_hw_enable_write(cdrv.vchar_hw, isWriteEnable); 
+      printk("Data registers have been %s to read\n", (isWriteEnable == ENABLE)?"enable":"disable"); 
+      }
+      break;
+    case VCHAR_GET_STS_REGS:
+      {
+      sts_regs_t status; 
+      vchar_hw_get_status(cdrv.vchar_hw, &status); 
+      copy_to_user((sts_regs_t*)arg, &status, sizeof(status)); 
+      printk("Got information from status registers\n"); 
+      }
+      break;
+  }
+
+  return ret; 
+}
+
 
 int vchar_hw_init(vchar_dev_t * hw)
 {
@@ -173,6 +266,16 @@ void vchar_hw_exit(vchar_dev_t * hw)
 {
   kfree(hw->control_regs); 
 }
+
+static struct file_operations fops = 
+{
+	.owner   = THIS_MODULE,
+	.open    = vchar_driver_open,
+	.release = vchar_driver_release,
+	.read    = vchar_driver_read, 
+	.write   = vchar_driver_write,
+	.unlocked_ioctl = vchar_driver_ioctl,
+}; 
 
 static int __init my_init(void)
 {
