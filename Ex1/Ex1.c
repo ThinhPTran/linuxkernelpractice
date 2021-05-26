@@ -140,9 +140,6 @@ static ssize_t vchar_driver_write(struct file *filp, const char __user *user_buf
   return num_bytes; 
 }
 
-
-
-
 static struct file_operations fops = 
 {
 	.owner   = THIS_MODULE,
@@ -183,24 +180,28 @@ static int __init my_init(void)
    
   printk("Hello my first driver"); 
 
-  // grant a major device number 
+  // grant a major device number. This is a way to statically set device number (not reccomend to use)
   cdrv.dev_num = MKDEV(468, 0); 
+
+  // Here we dynamically allocate device number. This way is more flexible so it can run on other linux computer without running into device number conflictions.
   ret = alloc_chrdev_region(&cdrv.dev_num, 0, 1, "vchar_device"); 
 
   if (ret < 0) {
-    printk("failed to register device number statically\n"); 
+    printk("failed to register device number dynamically\n"); 
     return ret; 
   } else {
-    printk("Initialize vchar driver successfully\n"); 
+    printk("Initialize vchar driver successfully, the first number is for device driver, the second one is the the device in case there are more than one devices handled by one driver\n"); 
     printk("Allocated device number (%d, %d)\n", MAJOR(cdrv.dev_num), MINOR(cdrv.dev_num)); 
 
     // create a device file
+    printk("Creating device class!!!"); 
     cdrv.dev_class = class_create(THIS_MODULE, "class_vchar_dev"); 
     if (cdrv.dev_class == NULL) {
       printk("failed to create a device class\n"); 
       unregister_chrdev_region(cdrv.dev_num, 1); 
       return -1; 
     } else {
+      printk("Creating device using device a device number and a device class!!!"); 
       cdrv.dev = device_create(cdrv.dev_class, NULL, cdrv.dev_num, NULL, "vchar_dev"); 
 
       if (IS_ERR(cdrv.dev)) {
@@ -208,6 +209,7 @@ static int __init my_init(void)
 	class_destroy(cdrv.dev_class); 
 	unregister_chrdev_region(cdrv.dev_num, 1); 
       } else {
+	printk("allocate memory for driver's data structure!!!"); 
         cdrv.vchar_hw = kzalloc(sizeof(vchar_dev_t), GFP_KERNEL); 
 	if (!cdrv.vchar_hw) {
           printk("failed to allocate data structure of the driver\n"); 
@@ -243,6 +245,7 @@ static int __init my_init(void)
 	      return -1; 
 	    } else {
               printk("allocate cdev structure successfully\n");
+	      printk("Registering entry point to linux kernel modules!!!");
 	      cdev_init(cdrv.vcdev, &fops); 
               ret = cdev_add(cdrv.vcdev, cdrv.dev_num, 1); 
 	      if (ret < 0) {
